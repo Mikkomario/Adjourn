@@ -1,0 +1,79 @@
+{
+  "project": "Adjourn",
+  "database": "adjourn_db",
+  "package": "vf.adjourn",
+  "classes": {
+    "file": [
+      {
+        "name": "FileType",
+        "doc": "Represents a specific file type, such as a text file",
+        "props": [
+          {
+            "name": "name",
+            "type": "String(4-12)",
+            "doc": "Name of this file type",
+            "index": true
+          }
+        ]
+      },
+      {
+        "name": "Directory",
+        "name_plural": "Directories",
+        "doc": "Represents a directory that may contain files",
+        "combo": {
+          "name": "DirectoryWithFiles",
+          "name_plural": "DirectoriesWithFiles",
+          "children": "FileIndex",
+          "child_alias": "file",
+          "children_alias": "files",
+          "doc": "Lists the files that appear within a directory"
+        },
+        "combo_index": ["parentId", "name"],
+        "props": [
+          {
+            "ref": "directory",
+            "name": "parentId",
+            "type": "Option[Int]",
+            "doc": "Id of the directory that contains this directory. None if this is the root directory / drive."
+          },
+          {
+            "name": "name",
+            "type": "NonEmptyString(32-640)"
+          }
+        ]
+      },
+      {
+        "name": "FileIndex",
+        "name_plural": "FileIndices",
+        "combo_indices": [["typeId", "size", "name"], ["directoryId", "name"]],
+        "props": [
+          {
+            "ref": "directory",
+            "doc": "Id of the directory where this file resides"
+          },
+          {
+            "name": "name",
+            "type": "NonEmptyString(32-640)",
+            "doc": "Name of this file"
+          },
+          {
+            "ref": "file_type",
+            "name": "typeId",
+            "doc": "Id that matches this file's type"
+          },
+          {
+            "name": "size",
+            "type": "Int",
+            "limit": "Big",
+            "doc": "Size of this file in bytes"
+          },
+          {
+            "name": "lastModified",
+            "type": "Option[Instant]",
+            "doc": "Time when this file was last modified (may be out of date)"
+          }
+        ]
+      }
+    ]
+  }
+}
