@@ -32,6 +32,11 @@ trait ManyDirectoriesAccessLike[+A, +Repr] extends ManyModelAccess[A] with Index
 	  */
 	protected def model = DirectoryModel
 	
+	/**
+	 * @return Access to directories that don't have any parents
+	 */
+	def roots = filter(model.parentIdColumn.isNull)
+	
 	
 	// OTHER	--------------------
 	

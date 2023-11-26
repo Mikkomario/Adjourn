@@ -16,6 +16,8 @@ import vf.adjourn.util.Common._
 
 import java.nio.file.Path
 import java.time.Instant
+import scala.collection.mutable
+import scala.concurrent.Future
 
 /**
  * A process for indexing files
@@ -37,11 +39,26 @@ object IndexFiles
 		// Contains paths that had no existing index. Includes directory id.
 		val newPathsBuffer = new TwoThreadBuffer[(Int, Path, Option[Instant])](500)
 		// Contains paths that had an existing index (included)
-		val existingPathsBuffer = new TwoThreadBuffer[(Path, FileIndex)](500)
+		val existingPathsBuffer = new TwoThreadBuffer[(Path, FileIndex, Option[Instant])](500)
 		// Contains prepared indexing data (size, name, file type & last modified) for each new path
 		val indexDataBuffer = new TwoThreadBuffer[FileIndexData](500)
 		// Contains queued path index updates (index id, file size & last modified time)
 		val updateBuffer = new TwoThreadBuffer[(Int, Long, Option[Instant])](500)
+		
+		// Path-listing thread
+		Future {
+			listFilesByDirectory(root.toTree, pathBuffer.output)
+			pathBuffer.output.close()
+		}
+		// Thread that separates into existing and new entries
+		Future {
+			cPool.tryWith { implicit c =>
+				checkPathExistence(pathBuffer.input, newPathsBuffer.output, existingPathsBuffer.output)
+			}.logFailure
+			newPathsBuffer.output.close()
+			existingPathsBuffer.output.close()
+		}
+		// TODO: Add the other processes
 	}
 	
 	// NB: Doesn't close the buffer afterwards
@@ -58,19 +75,42 @@ object IndexFiles
 		subDirectories.foreach { listFilesByDirectory(_, buffer) }
 	}
 	
+	// NB: Doesn't close buffers afterwards
+	// NB: Doesn't process files in the drive directories
 	private def checkPathExistence(pathBuffer: Input[(Path, Seq[(Path, Option[Instant])])],
 	                               newPathsBuffer: Output[(Int, Path, Option[Instant])],
 	                               existingPathsBuffer: Output[(Path, FileIndex, Option[Instant])])
 	                              (implicit connection: Connection) =
 	{
+		// Collects the drive ids in order to avoid repeated queries
+		val driveIdCache = mutable.Map[String, Int]()
+		driveIdCache ++= DbDirectories.roots.pull.map { d => d.name -> d.id }
+		
 		while (pathBuffer.hasNext) {
-			val directories = pathBuffer.collectNextBetween(1, 100)
-			// TODO: Handle the drive level and then use checkPathExistence to handle the directories. Remember to use normalized paths.
+			// Groups the pulled directories by drive/root
+			val directoriesByDrive = pathBuffer.collectNextBetween(1, 100)
+				.map { case (path, files) => (path.toRealPath().parts, files) }.groupBy { _._1.head }
+			// Inserts missing drives to the DB
+			driveIdCache ++= DirectoryModel.insert(
+				(directoriesByDrive.keySet -- driveIdCache.keySet).map { DirectoryData(None, _) }.toVector)
+				.map { d => d.name -> d.id }
+			// Reads existing directory entries directly under the drives
+			val rootDirectoriesByDriveId = DbDirectories.directlyUnderDirectories(driveIdCache.values.toSet).pull
+				.groupBy { _.parentId.get }
+			
+			// Processes each drive separately
+			directoriesByDrive.foreach { case (driveName, directories) =>
+				val driveId = driveIdCache(driveName)
+				val rootDirectories = rootDirectoriesByDriveId.getOrElse(driveId, Vector.empty)
+				checkPathExistence(driveId,
+					directories.map { case (parts, files) => parts.tail -> files }, rootDirectories, newPathsBuffer,
+					existingPathsBuffer)
+			}
 		}
 	}
 	
 	// Here assumes that the parts -vector of NONE of the listed directories starts with the specified parent directory
-	private def checkPathExistence(parentId: Int, directories: Vector[(Vector[String], Seq[(Path, Option[Instant])])],
+	private def checkPathExistence(parentId: Int, directories: Vector[(Seq[String], Seq[(Path, Option[Instant])])],
 	                               existingEntries: Vector[Directory],
 	                               newPathsBuffer: Output[(Int, Path, Option[Instant])],
 	                               existingPathsBuffer: Output[(Path, FileIndex, Option[Instant])])
@@ -127,7 +167,7 @@ object IndexFiles
 	
 	// Assumes that inserted directory name is listed as the first parts element in first newDirData elements
 	// Consequently that every parts-vector contains at least one element
-	private def insertNewDirectoriesAndFiles(newDirData: Vector[(DirectoryData, Vector[(Vector[String], Seq[(Path, Option[Instant])])])],
+	private def insertNewDirectoriesAndFiles(newDirData: Vector[(DirectoryData, Vector[(Seq[String], Seq[(Path, Option[Instant])])])],
 	                                         newPathsBuffer: Output[(Int, Path, Option[Instant])])
 	                                        (implicit connection: Connection): Unit =
 	{
